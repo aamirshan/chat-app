@@ -25,6 +25,8 @@ Promise.all([pubClient.connect(), subClient.connect()]).then(() => {
 
 
 const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/user');
+const messageRoutes = require('./routes/message');
 const Message = require('./models/message');
 const socketAuth = require('./middlewares/socketAuth');
 const { connectProducer, disconnectProducer, sendMessage } = require('./config/kafka');
@@ -38,6 +40,8 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/messages', messageRoutes);
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -46,32 +50,48 @@ app.get('/', (req, res) => {
 });
 
 io.on('connection', async (socket) => {
-  console.log('a user connected');
+  console.log('a user connected:', socket.user.id);
 
-  // Load chat history
-  try {
-    const messages = await Message.find().sort({ createdAt: -1 }).limit(50);
-    socket.emit('history', messages.reverse());
-  } catch (err) {
-    console.error(err.message);
-  }
+  // Join a room based on user ID for private messaging
+  socket.join(socket.user.id.toString());
 
-  socket.on('chat message', async (msg) => {
+  socket.on('chat message', async (data) => {
     try {
+      const { recipientId, content } = data;
+      const senderId = socket.user.id;
+
       const message = {
-        content: msg,
-        username: socket.user.username,
+        content,
+        senderId,
+        recipientId,
         timestamp: new Date().toISOString()
       };
+
+      // Send message to Kafka for persistence
       await sendMessage('chat-messages', message);
-      io.emit('chat message', `${socket.user.username}: ${msg}`);
+
+      // Prepare message for real-time delivery
+      const outboundMessage = {
+        content,
+        sender: { _id: senderId, username: socket.user.username }, // Assuming username is on socket.user
+        recipient: { _id: recipientId }, // We don't have recipient username here
+        createdAt: message.timestamp
+      };
+
+      // Emit to recipient's room
+      io.to(recipientId.toString()).emit('chat message', outboundMessage);
+
+      // Also send to sender's room so they see their own message
+      // This is useful if the user is connected on multiple devices.
+      io.to(senderId.toString()).emit('chat message', outboundMessage);
+
     } catch (err) {
-      console.error(err.message);
+      console.error('Error handling chat message:', err.message);
     }
   });
 
   socket.on('disconnect', () => {
-    console.log('user disconnected');
+    console.log('user disconnected:', socket.user.id);
   });
 });
 
