@@ -19,6 +19,14 @@ const User = {
   async findById(id) {
     const [rows] = await db.execute('SELECT * FROM users WHERE id = ?', [id]);
     return rows[0];
+  },
+
+  async findAll(currentUserId) {
+    const [rows] = await db.execute(
+      'SELECT id, username FROM users WHERE id != ?',
+      [currentUserId]
+    );
+    return rows;
   }
 };
 
